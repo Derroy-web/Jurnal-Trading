@@ -2,50 +2,83 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\TradeAnalyzer;
 use App\Models\Trade;
+use App\Services\TradeAnalyzer;
 use Illuminate\Http\Request;
 
 class TradeController extends Controller
 {
+    // Halaman Dashboard: Menampilkan semua trade & gradenya
+    public function index()
+    {
+        // Urutkan dari trade terbaru
+        $trades = Trade::latest()->get();
+        return view('trades.index', compact('trades'));
+    }
+
+    // Halaman Form Upload
+    public function create()
+    {
+        return view('trades.create');
+    }
+
+    // Proses Simpan & Analisa AI
     public function store(Request $request, TradeAnalyzer $analyzer)
     {
-        // 1. Upload Gambar
-        $path = $request->file('screenshot')->store('screenshots', 'public');
-
-        // 2. Minta AI Menganalisa
-        $analysisResult = $analyzer->analyzeChart(storage_path('app/public/'.$path));
-        // Contoh output AI: ['patterns_detected' => ['FVG', 'Liquidity Sweep'], ...]
-
-        // 3. HITUNG PROBABILITAS (Auto-Grade Logic)
-        // Cari trade masa lalu yang punya pattern SAMA persis
-        $patterns = $analysisResult['patterns_detected'];
-        
-        // Query ajaib Laravel JSON:
-        $similarTrades = Trade::whereJsonContains('ai_analysis_data->patterns_detected', $patterns)
-                            ->where('result', '!=', 'OPEN') // Hanya yang sudah selesai
-                            ->get();
-
-        $grade = 'N/A'; // Default kalau data belum cukup
-        
-        if ($similarTrades->count() > 5) { // Minimal 5 data biar valid
-            $wins = $similarTrades->where('result', 'WIN')->count();
-            $winRate = $wins / $similarTrades->count();
-
-            if ($winRate >= 0.7) $grade = 'A+ (High Prob)';
-            elseif ($winRate >= 0.5) $grade = 'B (Standard)';
-            else $grade = 'C (Risky)';
-        }
-
-        // 4. Simpan ke Database
-        Trade::create([
-            'pair' => $request->pair,
-            'screenshot_path' => $path,
-            'ai_analysis_data' => $analysisResult, // Simpan JSON mentah dari AI
-            'system_grade' => $grade, // Grade otomatis dari data masa lalumu
-            // ... field lain
+        // 1. Validasi Input
+        $request->validate([
+            'pair' => 'required|string',
+            'screenshot' => 'required|image|mimes:jpeg,png,jpg|max:4096', // Max 4MB
+            'direction' => 'required|in:LONG,SHORT',
         ]);
 
-        return redirect()->back()->with('success', 'Trade logged! AI Grade: ' . $grade);
+        try {
+            // 2. Simpan Gambar ke Storage
+            // File akan masuk ke storage/app/public/screenshots
+            $path = $request->file('screenshot')->store('screenshots', 'public');
+            $fullPath = storage_path('app/public/' . $path);
+
+            // 3. Panggil AI Service untuk Analisa
+            $aiResult = $analyzer->analyzeChart($fullPath);
+
+            // 4. Hitung Grade Sederhana (Versi Awal)
+            // Nanti bisa dipercanggih dengan cek history database
+            $grade = 'C'; // Default
+            
+            // Logika Grading Sementara:
+            // Kalau AI mendeteksi 'FVG' atau 'Liquidity' dan trend searah (Pro-Trend) -> Grade A
+            $patterns = $aiResult['patterns_detected'] ?? [];
+            $context = $aiResult['smc_context'] ?? '';
+            
+            // Contoh Logic grading sederhana
+            $isHighProb = false;
+            foreach($patterns as $pat) {
+                if (stripos($pat, 'FVG') !== false || stripos($pat, 'Order Block') !== false) {
+                    $isHighProb = true;
+                }
+            }
+
+            if ($isHighProb && stripos($context, 'Pro-Trend') !== false) {
+                $grade = 'A';
+            } elseif ($isHighProb) {
+                $grade = 'B';
+            }
+
+            // 5. Simpan ke Database
+            Trade::create([
+                'pair' => strtoupper($request->pair),
+                'direction' => $request->direction,
+                'screenshot_path' => $path,
+                'ai_analysis_data' => $aiResult, // JSON otomatis masuk
+                'system_grade' => $grade,
+                'entry_date' => now(),
+                'result' => 'OPEN'
+            ]);
+
+            return redirect()->route('trades.index')->with('success', 'Trade berhasil dianalisa AI!');
+
+        } catch (\Exception $e) {
+            return back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
+        }
     }
 }
