@@ -3,116 +3,224 @@
 namespace App\Http\Controllers;
 
 use App\Models\Trade;
-use App\Services\TradeAnalyzer;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http; 
+use Illuminate\Support\Facades\Storage;
 
 class TradeController extends Controller
 {
-    // Halaman Dashboard: Menampilkan semua trade & gradenya
-    public function index()
-    {
-        // Urutkan dari trade terbaru
-        $trades = Trade::latest()->get();
-        return view('trades.index', compact('trades'));
-    }
-
-    // Halaman Form Upload
+    // =================================================================
+    // 1. HALAMAN UTAMA (FORM + DASHBOARD + LOG)
+    // =================================================================
     public function create()
     {
-        return view('trades.create');
+        // --- A. DATA DASHBOARD ---
+        $totalTrades = Trade::count();
+        $wins = Trade::where('result', 'WIN')->count();
+        $losses = Trade::where('result', 'LOSS')->count();
+        
+        // Win Rate
+        $winRate = $totalTrades > 0 ? round(($wins / $totalTrades) * 100, 1) : 0;
+        
+        // Total Profit ($)
+        $totalProfit = Trade::sum('profit_loss');
+        
+        // Growth (%) - Asumsi trade pertama adalah modal awal
+        $firstTrade = Trade::orderBy('id', 'asc')->first();
+        $initialBalance = $firstTrade ? $firstTrade->account_balance : 0; 
+        $totalGainPercent = ($initialBalance > 0) ? round(($totalProfit / $initialBalance) * 100, 2) : 0;
+
+        // Setup Terbaik (AI)
+        $bestSetup = Trade::where('result', 'WIN')
+                    ->select('setup_type', Trade::raw('count(*) as total'))
+                    ->groupBy('setup_type')
+                    ->orderByDesc('total')
+                    ->first();
+
+        // --- B. DATA FORM SOP ---
+        $sopList = [
+            'market_trending' => 'Apakah market sedang Trending/Jelas?',
+            'setup_valid' => 'Apakah ada Setup (SMC/Price Action) Valid?',
+            'risk_management' => 'Apakah Risk per trade max 1%?',
+            'no_news' => 'Apakah tidak ada News High Impact 15 menit lagi?',
+            'mental_state' => 'Kondisi Mental (Tenang & Fokus)?',
+        ];
+
+        // --- C. DATA TABEL LOG ---
+        $trades = Trade::latest()->paginate(5);
+
+        return view('trades.create', compact(
+            'sopList', 'trades', 
+            'totalTrades', 'wins', 'losses', 'winRate', 
+            'bestSetup', 'totalProfit', 'totalGainPercent'
+        ));
     }
 
-    // Proses Simpan & Analisa AI
-    public function store(Request $request, TradeAnalyzer $analyzer)
+    // =================================================================
+    // 2. SIMPAN TRADE BARU (REQ KE AI PERTAMA KALI)
+    // =================================================================
+    public function store(Request $request)
     {
-        // 1. Validasi Input
         $request->validate([
-            'pair' => 'required|string',
-            'screenshot' => 'required|image|mimes:jpeg,png,jpg|max:4096', // Max 4MB
-            'direction' => 'required|in:LONG,SHORT',
+            'pair' => 'required',
+            'chart_image' => 'required|image|max:4096', // Max 4MB
         ]);
 
+        // Upload Gambar
+        $imagePath = $request->file('chart_image')->store('charts', 'public');
+        
+        // Siapkan Gambar untuk AI
+        $imageContent = file_get_contents(storage_path('app/public/' . $imagePath));
+        $base64Image = base64_encode($imageContent);
+
+        // Cek SOP
+        $sopListLabels = [
+            'market_trending' => 'Market Trending',
+            'setup_valid' => 'Setup Valid',
+            'risk_management' => 'Risk Management Aman',
+            'no_news' => 'No News High Impact',
+            'mental_state' => 'Mental Stabil',
+        ];
+        
+        $userSop = $request->input('sop', []); 
+        $violations = [];
+
+        foreach ($sopListLabels as $key => $label) {
+            if (!isset($userSop[$key])) {
+                $violations[] = $label;
+            }
+        }
+
+        $violationText = empty($violations) 
+            ? "Saya DISIPLIN. Tidak ada pelanggaran SOP." 
+            : "SAYA MELANGGAR SOP: " . implode(', ', $violations);
+
+        // Prompt AI 1 (Identifikasi Setup)
+        $prompt = "
+        Role: Mentor Trading (SMC/Price Action).
+        Konteks: Saya entry {$request->position} di {$request->pair}.
+        SOP Status: {$violationText}
+        
+        Tugas:
+        1. Identifikasi Setup Type (Contoh: Breakout, CHOCH, Liquidity Sweep, Inducement).
+        2. Kritik chart ini.
+        3. Prediksi Win Rate.
+        
+        FORMAT JSON WAJIB:
+        {
+            \"setup_type\": \"Nama Setup\",
+            \"analysis\": \"Penjelasan singkat...\",
+            \"win_rate\": \"High/Medium/Low\"
+        }
+        ";
+
+        // Call Gemini
+        $apiKey = env('GEMINI_API_KEY');
         try {
-            // 2. Simpan Gambar ke Storage
-            // File akan masuk ke storage/app/public/screenshots
-            $path = $request->file('screenshot')->store('screenshots', 'public');
-            $fullPath = storage_path('app/public/' . $path);
-
-            // 3. Panggil AI Service untuk Analisa
-            $aiResult = $analyzer->analyzeChart($fullPath);
-
-            // 4. Hitung Grade Sederhana (Versi Awal)
-            // Nanti bisa dipercanggih dengan cek history database
-            $grade = 'C'; // Default
-            
-            // Logika Grading Sementara:
-            // Kalau AI mendeteksi 'FVG' atau 'Liquidity' dan trend searah (Pro-Trend) -> Grade A
-            $patterns = $aiResult['patterns_detected'] ?? [];
-            $context = $aiResult['smc_context'] ?? '';
-            
-            // Contoh Logic grading sederhana
-            $isHighProb = false;
-            foreach($patterns as $pat) {
-                if (stripos($pat, 'FVG') !== false || stripos($pat, 'Order Block') !== false) {
-                    $isHighProb = true;
-                }
-            }
-
-            if ($isHighProb && stripos($context, 'Pro-Trend') !== false) {
-                $grade = 'A';
-            } elseif ($isHighProb) {
-                $grade = 'B';
-            }
-
-            // 5. Simpan ke Database
-            Trade::create([
-                'pair' => strtoupper($request->pair),
-                'direction' => $request->direction,
-                'screenshot_path' => $path,
-                'ai_analysis_data' => $aiResult, // JSON otomatis masuk
-                'system_grade' => $grade,
-                'entry_date' => now(),
-                'result' => 'OPEN'
+            $response = Http::post("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={$apiKey}", [
+                'contents' => [['parts' => [
+                    ['text' => $prompt],
+                    ['inline_data' => ['mime_type' => 'image/jpeg', 'data' => $base64Image]]
+                ]]]
             ]);
 
-            return redirect()->route('trades.index')->with('success', 'Trade berhasil dianalisa AI!');
-
+            $aiData = $response->json();
+            $rawText = $aiData['candidates'][0]['content']['parts'][0]['text'] ?? '{}';
+            $rawText = str_replace(['```json', '```'], '', $rawText);
+            $analysisResult = json_decode($rawText, true);
         } catch (\Exception $e) {
-            return back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
+            $analysisResult = ['setup_type' => 'Manual', 'analysis' => 'AI Error: ' . $e->getMessage()];
         }
-    }
 
-    public function edit($id)
-    {
-        $trade = Trade::findOrFail($id);
-        return view('trades.edit', compact('trade'));
-    }
+        // Simpan Data
+        $finalNote = "⚠️ SOP Check: " . $violationText . "\n\n";
+        $finalNote .= "🤖 Pre-Trade Analysis:\n" . ($analysisResult['analysis'] ?? '-');
 
-    public function update(Request $request, $id)
-    {
-        $trade = Trade::findOrFail($id);
-
-        // Validasi data input
-        $request->validate([
-            'result' => 'required|in:WIN,LOSS,BE',
-            'pnl' => 'numeric|nullable',
-            'rr_obtained' => 'numeric|nullable',
-            'session' => 'string|nullable',
-            'note' => 'string|nullable',
-        ]);
-
-        // Update data trade
-        $trade->update([
-            'result' => $request->result,
-            'pnl' => $request->pnl,
-            'rr_obtained' => $request->rr_obtained,
+        Trade::create([
+            'entry_date' => now(),
+            'pair' => $request->pair,
             'session' => $request->session,
-            'note' => $request->note,
+            'position' => $request->position,
+            'account_balance' => $request->account_balance ?? 0,
+            'setup_type' => $analysisResult['setup_type'] ?? 'Unknown',
+            'trade_note' => $finalNote,
+            'chart_image' => $imagePath,
+            'sop_data' => $userSop,
         ]);
 
-        // Opsional: Logic Auto-Grade Lanjutan
-        // Jika user menyimpan hasil 'WIN' dan setupnya sesuai AI, grade bisa dinaikkan
+        return redirect()->route('trades.create')->with('success', 'Trade dicatat!');
+    }
+
+    // =================================================================
+    // 3. UPDATE STATUS (REQ KE AI KEDUA KALI)
+    // =================================================================
+    public function updateStatus(Request $request, $id)
+    {
+        $request->validate([
+            'pnl' => 'required|numeric',
+            'result' => 'required|in:WIN,LOSS'
+        ]);
+
+        $trade = Trade::findOrFail($id);
         
-        return redirect()->route('trades.index')->with('success', 'Trade updated successfully!');
+        // A. Update Keuangan
+        $pnl = abs($request->pnl); 
+        if ($request->result == 'LOSS') $pnl = -$pnl;
+
+        $trade->result = $request->result;
+        $trade->profit_loss = $pnl;
+        $trade->equity = $trade->account_balance + $pnl;
+        $trade->percentage_change = ($trade->account_balance > 0) ? ($pnl / $trade->account_balance) * 100 : 0;
+
+        // B. Update Analisa AI (Evaluasi Akhir)
+        if ($trade->chart_image && Storage::disk('public')->exists($trade->chart_image)) {
+            try {
+                $imageContent = file_get_contents(storage_path('app/public/' . $trade->chart_image));
+                $base64Image = base64_encode($imageContent);
+                $apiKey = env('GEMINI_API_KEY');
+
+                // Konteks Prompt Berbeda untuk Win/Loss
+                $evalContext = ($request->result == 'WIN') 
+                    ? "Trade ini WIN. Jelaskan kenapa setup ini berhasil? Apa kuncinya?" 
+                    : "Trade ini LOSS. Cek chart lagi. Apakah ini Bad Analysis (kesalahan teknis) atau cuma Bad Luck (setup valid kena news)?";
+
+                $prompt = "
+                Role: Mentor Trading.
+                Status Akhir: {$request->result} (PnL: \${$pnl}).
+                Tugas: {$evalContext}
+                Jawab singkat maksimal 2 kalimat.
+                ";
+
+                $response = Http::post("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={$apiKey}", [
+                    'contents' => [['parts' => [
+                        ['text' => $prompt],
+                        ['inline_data' => ['mime_type' => 'image/jpeg', 'data' => $base64Image]]
+                    ]]]
+                ]);
+
+                $aiFeedback = $response->json()['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                
+                // Append Note
+                $trade->trade_note .= "\n\n➖➖➖➖➖➖➖➖\n";
+                $trade->trade_note .= "📢 RESULT ({$request->result}): " . trim($aiFeedback);
+
+            } catch (\Exception $e) {
+                // Silent fail agar user tetap bisa simpan PnL meski AI error
+            }
+        }
+
+        $trade->save();
+        return redirect()->back()->with('success', 'Status & Evaluasi AI berhasil disimpan!');
+    }
+
+    // =================================================================
+    // 4. HAPUS DATA
+    // =================================================================
+    public function destroy($id)
+    {
+        $trade = Trade::findOrFail($id);
+        if ($trade->chart_image) Storage::disk('public')->delete($trade->chart_image);
+        $trade->delete();
+        return redirect()->back()->with('success', 'Data dihapus.');
     }
 }

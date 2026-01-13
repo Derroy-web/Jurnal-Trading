@@ -3,9 +3,16 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\TradeController;
 
-Route::get('/', [TradeController::class, 'index'])->name('trades.index');
-Route::get('/upload', [TradeController::class, 'create'])->name('trades.create');
-Route::post('/upload', [TradeController::class, 'store'])->name('trades.store');
+// Halaman input trade
+Route::get('/entry', [TradeController::class, 'create'])->name('trades.create');
+Route::post('/entry', [TradeController::class, 'store'])->name('trades.store');
 
-Route::get('/trades/{id}/edit', [TradeController::class, 'edit'])->name('trades.edit');
-Route::put('/trades/{id}', [TradeController::class, 'update'])->name('trades.update');
+// Rute untuk update status trade (WIN/LOSS)
+Route::post('/trade/{id}/update', [TradeController::class, 'updateStatus'])->name('trades.updateStatus');
+
+Route::delete('/trade/{id}', [TradeController::class, 'destroy'])->name('trades.destroy');
+
+// Redirect halaman depan ke form entry (opsional)
+Route::get('/', function () {
+    return redirect()->route('trades.create');
+});

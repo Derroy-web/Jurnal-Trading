@@ -6,37 +6,40 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('trades', function (Blueprint $table) {
             $table->id();
-            $table->string('pair'); // XAUUSD, GBPUSD
-            $table->string('timeframe'); // M15, H1, H4
-            $table->string('direction'); // LONG / SHORT
-            $table->string('screenshot_path'); // Path gambar chart
             
-            // JANTUNGNYA SISTEM INI:
-            // Menyimpan hasil analisa AI (Trend, Pattern, FVG, dll) dalam format JSON
-            $table->json('ai_analysis_data')->nullable(); 
+            // 1. Info Dasar (Sesuai Kolom CSV)
+            $table->dateTime('entry_date'); // Date and Time
+            $table->string('pair');         // XAU/USD, dll
+            $table->string('session');      // New York, London
+            $table->enum('position', ['LONG', 'SHORT']); // LONG/SHORT
             
-            // Hasil Trade (diisi setelah trade selesai)
-            $table->enum('result', ['WIN', 'LOSS', 'BE', 'OPEN'])->default('OPEN');
-            $table->decimal('pnl', 10, 2)->nullable(); // Profit/Loss dalam $
-            $table->decimal('rr_obtained', 5, 2)->nullable(); // Risk Reward yang didapat
+            // 2. Analisa (Diisi AI atau Manual)
+            $table->string('setup_type')->nullable(); // Setup Type (SMC, Breakout, dll)
             
-            // Auto-Calculated Grade
-            $table->string('system_grade')->nullable(); // A, B, C (dari logika coding nanti)
+            // 3. Keuangan (Sesuai CSV)
+            $table->decimal('account_balance', 15, 2); // Modal saat entry
+            $table->decimal('risk_reward', 5, 2)->nullable(); // Risk to Reward (misal 3.5)
+            $table->enum('result', ['WIN', 'LOSS', 'BE', 'OPEN'])->default('OPEN'); // Status
+            $table->decimal('profit_loss', 15, 2)->nullable(); // Nominal Profit/Loss
+            $table->decimal('equity', 15, 2)->nullable(); // Saldo akhir
+            $table->decimal('percentage_change', 8, 2)->nullable(); // % Change
+
+            // 4. Data Tambahan untuk Fitur Web
+            $table->string('chart_image'); // Path file gambar yang diupload
+            $table->text('trade_note')->nullable(); // Catatan gabungan (AI + User)
             
+            // 5. SOP (Simpan sebagai JSON agar fleksibel checklistnya)
+            // Ini akan menyimpan data seperti: {"trend_jelas": true, "mental_aman": false}
+            $table->json('sop_data')->nullable(); 
+
             $table->timestamps();
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('trades');
