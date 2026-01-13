@@ -63,6 +63,23 @@
                     </div>
                 </div>
             </div>
+
+            <div class="mt-4 flex justify-between items-center border-t border-gray-700 pt-3">
+                <div class="text-sm">
+                    @if($trade->result == 'OPEN')
+                        <span class="text-gray-500">Running... ⏳</span>
+                    @elseif($trade->result == 'WIN')
+                        <span class="text-green-400 font-bold">+$ {{ $trade->pnl }} ({{ $trade->rr_obtained }}R)</span>
+                    @elseif($trade->result == 'LOSS')
+                        <span class="text-red-400 font-bold">-$ {{ abs($trade->pnl) }}</span>
+                    @endif
+                </div>
+                
+                <a href="{{ route('trades.edit', $trade->id) }}" 
+                class="bg-gray-700 hover:bg-blue-600 text-white text-xs px-3 py-2 rounded transition">
+                📝 Update Result
+                </a>
+            </div>
             @endforeach
         </div>
     </div>

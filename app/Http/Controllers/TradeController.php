@@ -81,4 +81,38 @@ class TradeController extends Controller
             return back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
         }
     }
+
+    public function edit($id)
+    {
+        $trade = Trade::findOrFail($id);
+        return view('trades.edit', compact('trade'));
+    }
+
+    public function update(Request $request, $id)
+    {
+        $trade = Trade::findOrFail($id);
+
+        // Validasi data input
+        $request->validate([
+            'result' => 'required|in:WIN,LOSS,BE',
+            'pnl' => 'numeric|nullable',
+            'rr_obtained' => 'numeric|nullable',
+            'session' => 'string|nullable',
+            'note' => 'string|nullable',
+        ]);
+
+        // Update data trade
+        $trade->update([
+            'result' => $request->result,
+            'pnl' => $request->pnl,
+            'rr_obtained' => $request->rr_obtained,
+            'session' => $request->session,
+            'note' => $request->note,
+        ]);
+
+        // Opsional: Logic Auto-Grade Lanjutan
+        // Jika user menyimpan hasil 'WIN' dan setupnya sesuai AI, grade bisa dinaikkan
+        
+        return redirect()->route('trades.index')->with('success', 'Trade updated successfully!');
+    }
 }
